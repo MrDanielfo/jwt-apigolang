@@ -6,61 +6,26 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 
+	"./driver"
+	"./models"
+	"./utils"
 	"github.com/dgrijalva/jwt-go"
 	"github.com/gorilla/mux"
-	"github.com/lib/pq"
+	"github.com/subosito/gotenv"
 	"golang.org/x/crypto/bcrypt"
 )
 
-/* 'postgresql://postgres:corvettez6@localhost/golang_mike'
-Puede pedir el sslmode=disable
-*/
-
-type User struct {
-	ID       int    `json:"id"`
-	Email    string `json:"email"`
-	Password string `json:"password"`
-}
-
-type JWT struct {
-	Token string `json:"token"`
-}
-
-type Error struct {
-	Message string `json:"message"`
-}
-
 var db *sql.DB
 
-/*
-const (
-	host     = "localhost"
-	port     = 5432
-	user     = "postgres"
-	password = "corvettez6"
-	dbname   = "golang_mike"
-) */
+func init() {
+	gotenv.Load()
+}
 
 func main() {
-	pgURL, err := pq.ParseURL("postgresql://postgres:corvettez6@localhost/golang_mike?sslmode=disable")
-
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	db, err = sql.Open("postgres", pgURL)
-
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	err = db.Ping()
-
-	if err != nil {
-		panic(err)
-	}
+	db = driver.ConnectDB()
 
 	router := mux.NewRouter().StrictSlash(true)
 	router.HandleFunc("/signup", signUp).Methods("POST")
@@ -72,25 +37,16 @@ func main() {
 	log.Fatal(server)
 }
 
-func respondWithError(w http.ResponseWriter, status int, error Error) {
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(error)
-}
-
-func responseJSON(w http.ResponseWriter, data interface{}) {
-	json.NewEncoder(w).Encode(data)
-}
-
 func signUp(w http.ResponseWriter, r *http.Request) {
 
-	var user User
-	var error Error
+	var user models.User
+	var error models.Error
 	json.NewDecoder(r.Body).Decode(&user)
 
 	if user.Email == "" || user.Password == "" {
 		error.Message = "Fields are required"
 		// status bad request
-		respondWithError(w, http.StatusBadRequest, error)
+		utils.RespondWithError(w, http.StatusBadRequest, error)
 		return
 	}
 
@@ -108,18 +64,18 @@ func signUp(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		error.Message = "Server error"
-		respondWithError(w, http.StatusInternalServerError, error)
+		utils.RespondWithError(w, http.StatusInternalServerError, error)
 	}
 
 	user.Password = ""
 	w.Header().Set("Content-Type", "application/json")
-	responseJSON(w, user)
+	utils.ResponseJSON(w, user)
 
 }
 
-func generateToken(user User) (string, error) {
+func generateToken(user models.User) (string, error) {
 	var err error
-	secret := "comeonjoinwithmeinthiscourse"
+	secret := os.Getenv("SECRET")
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 		"email": user.Email,
 		"iss":   "course",
@@ -138,16 +94,16 @@ func generateToken(user User) (string, error) {
 func login(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
-	var user User
-	var jwt JWT
-	var error Error
+	var user models.User
+	var jwt models.JWT
+	var error models.Error
 
 	json.NewDecoder(r.Body).Decode(&user)
 
 	if user.Email == "" || user.Password == "" {
 		error.Message = "Fields are required"
 		// status bad request
-		respondWithError(w, http.StatusBadRequest, error)
+		utils.RespondWithError(w, http.StatusBadRequest, error)
 		return
 	}
 	/* Este password tiene que ir aquí para que tome el valor que se le envía por JSON */
@@ -159,7 +115,7 @@ func login(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if err == sql.ErrNoRows {
 			error.Message = "The user does not exist"
-			respondWithError(w, http.StatusBadRequest, error)
+			utils.RespondWithError(w, http.StatusBadRequest, error)
 			return
 		} else {
 			log.Fatal(err)
@@ -173,7 +129,7 @@ func login(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		error.Message = "Invalid credentials"
-		respondWithError(w, http.StatusUnauthorized, error)
+		utils.RespondWithError(w, http.StatusUnauthorized, error)
 		return
 	}
 
@@ -186,7 +142,7 @@ func login(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	jwt.Token = token
 
-	responseJSON(w, jwt)
+	utils.ResponseJSON(w, jwt)
 	// spew.Dump(user)
 
 }
@@ -199,10 +155,10 @@ func protectedEndpoint(w http.ResponseWriter, r *http.Request) {
 func tokenVerifyMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	// fmt.Println("token verify invoked")
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var errorObject Error
+		var errorObject models.Error
 		authHeader := r.Header.Get("Authorization")
 		bearerToken := strings.Split(authHeader, " ")
-		fmt.Println(bearerToken)
+		// fmt.Println(bearerToken)
 		if len(bearerToken) == 2 {
 			authToken := bearerToken[1]
 			// verificar si el token es válido
@@ -210,12 +166,12 @@ func tokenVerifyMiddleware(next http.HandlerFunc) http.HandlerFunc {
 				if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 					return nil, fmt.Errorf("There was an error")
 				}
-				return []byte("comeonjoinwithmeinthiscourse"), nil
+				return []byte(os.Getenv("SECRET")), nil
 			})
 
 			if error != nil {
 				errorObject.Message = error.Error()
-				respondWithError(w, http.StatusUnauthorized, errorObject)
+				utils.RespondWithError(w, http.StatusUnauthorized, errorObject)
 				return
 			}
 
@@ -223,13 +179,13 @@ func tokenVerifyMiddleware(next http.HandlerFunc) http.HandlerFunc {
 				next.ServeHTTP(w, r)
 			} else {
 				errorObject.Message = error.Error()
-				respondWithError(w, http.StatusUnauthorized, errorObject)
+				utils.RespondWithError(w, http.StatusUnauthorized, errorObject)
 				return
 			}
 
 		} else {
 			errorObject.Message = "Invalid token"
-			respondWithError(w, http.StatusUnauthorized, errorObject)
+			utils.RespondWithError(w, http.StatusUnauthorized, errorObject)
 			return
 		}
 		// fmt.Println(bearerToken)
